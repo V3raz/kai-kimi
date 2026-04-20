@@ -23,15 +23,16 @@ Você está conversando com Gustavo, seu criador e usuário principal.`
 
 export async function POST(req: NextRequest) {
   try {
-    const { messages } = await req.json() as {
+    const { messages, systemExtra = '' } = await req.json() as {
       messages: { role: 'user' | 'model'; parts: { text: string }[] }[]
+      systemExtra?: string
     }
 
     const model = genAI.getGenerativeModel({
       model: 'gemini-2.0-flash',
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       tools: [{ googleSearch: {} } as any],
-      systemInstruction: SYSTEM_PROMPT,
+      systemInstruction: systemExtra ? `${SYSTEM_PROMPT}\n\n${systemExtra}` : SYSTEM_PROMPT,
     })
 
     const chat = model.startChat({

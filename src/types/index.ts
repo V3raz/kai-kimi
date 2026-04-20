@@ -9,10 +9,20 @@ export interface Message {
   timestamp: Date
 }
 
-export interface ChatState {
+export interface Theme {
+  id: string
+  label: string
+  emoji: string
+  description: string
+  systemExtra: string
+  greeting: string
+}
+
+export interface Conversation {
+  id: string
+  title: string
+  themeId: string
   messages: Message[]
-  isLoading: boolean
-  expression: Expression
-  isSpeaking: boolean
-  isListening: boolean
+  createdAt: Date
+  updatedAt: Date
 }
