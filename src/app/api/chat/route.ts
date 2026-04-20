@@ -3,6 +3,9 @@ import { NextRequest } from 'next/server'
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!)
 
+// Tenta gemini-2.0-flash, depois gemini-1.5-flash como fallback
+const MODELS = ['gemini-2.0-flash', 'gemini-1.5-flash']
+
 const SYSTEM_PROMPT = `Você é Kimi, uma assistente pessoal de IA com personalidade própria.
 Você é inteligente, prestativa e um pouco carismática — como uma amiga muito capaz.
 
@@ -21,35 +24,71 @@ Diretrizes:
 
 Você está conversando com Gustavo, seu criador e usuário principal.`
 
+type GeminiMsg = { role: 'user' | 'model'; parts: { text: string }[] }
+
+async function tryStream(
+  modelName: string,
+  systemInstruction: string,
+  history: GeminiMsg[],
+  lastText: string,
+  useSearch: boolean,
+) {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const tools: any[] = useSearch ? [{ googleSearch: {} }] : []
+  const model = genAI.getGenerativeModel({ model: modelName, tools, systemInstruction })
+  const chat = model.startChat({ history: history.slice(0, -1) })
+  return chat.sendMessageStream(lastText)
+}
+
 export async function POST(req: NextRequest) {
   try {
     const { messages, systemExtra = '' } = await req.json() as {
-      messages: { role: 'user' | 'model'; parts: { text: string }[] }[]
+      messages: GeminiMsg[]
       systemExtra?: string
     }
 
-    const model = genAI.getGenerativeModel({
-      model: 'gemini-2.0-flash',
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      tools: [{ googleSearch: {} } as any],
-      systemInstruction: systemExtra ? `${SYSTEM_PROMPT}\n\n${systemExtra}` : SYSTEM_PROMPT,
-    })
+    if (!messages?.length) {
+      return Response.json({ error: 'Sem mensagens' }, { status: 400 })
+    }
 
-    const chat = model.startChat({
-      history: messages.slice(0, -1),
-    })
+    const systemInstruction = systemExtra ? `${SYSTEM_PROMPT}\n\n${systemExtra}` : SYSTEM_PROMPT
+    const lastText = messages[messages.length - 1]?.parts[0]?.text ?? ''
 
-    const lastMessage = messages[messages.length - 1]
-    const stream = await chat.sendMessageStream(lastMessage.parts[0].text)
+    let stream: Awaited<ReturnType<typeof tryStream>> | null = null
+    let lastError: unknown = null
+
+    // Tenta: 2.0-flash com search → 2.0-flash sem search → 1.5-flash sem search
+    const attempts = [
+      { model: MODELS[0], search: true },
+      { model: MODELS[0], search: false },
+      { model: MODELS[1], search: false },
+    ]
+
+    for (const attempt of attempts) {
+      try {
+        stream = await tryStream(attempt.model, systemInstruction, messages, lastText, attempt.search)
+        break
+      } catch (e) {
+        lastError = e
+        console.warn(`[chat] ${attempt.model} search=${attempt.search} falhou:`, (e as Error).message)
+      }
+    }
+
+    if (!stream) {
+      console.error('[chat] Todos os fallbacks falharam:', lastError)
+      return Response.json({ error: String(lastError) }, { status: 500 })
+    }
 
     const encoder = new TextEncoder()
     const readable = new ReadableStream({
       async start(controller) {
         try {
-          for await (const chunk of stream.stream) {
+          for await (const chunk of stream!.stream) {
             const text = chunk.text()
             if (text) controller.enqueue(encoder.encode(text))
           }
+        } catch (e) {
+          console.error('[chat] Erro no stream:', e)
         } finally {
           controller.close()
         }
@@ -64,7 +103,7 @@ export async function POST(req: NextRequest) {
       },
     })
   } catch (err) {
-    console.error('[chat/route]', err)
+    console.error('[chat/route] Erro geral:', err)
     return Response.json({ error: 'Erro interno' }, { status: 500 })
   }
 }
